@@ -1,0 +1,15 @@
+### Send valid Zipcode POST request with json body
+POST http://localhost:8181
+Content-Type: application/json
+
+{
+  "zipcode": "21930190"
+}
+
+### Send invalid Zipcode POST request with json body
+POST http://localhost:8181
+Content-Type: application/json
+
+{
+  "zipcode": "999999"
+}

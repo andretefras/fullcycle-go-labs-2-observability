@@ -17,7 +17,7 @@ type ZipcodeRequest struct {
 	Zipcode string `json:"zipcode"`
 }
 
-func handleAddressRequest(w http.ResponseWriter, r *http.Request) {
+func handleZipcodeRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, errMethodNotAllowed, http.StatusMethodNotAllowed)
 		return
@@ -33,20 +33,17 @@ func handleAddressRequest(w http.ResponseWriter, r *http.Request) {
 	var zipcodeRequest ZipcodeRequest
 	err = json.Unmarshal(body, &zipcodeRequest)
 	if err != nil {
-		http.Error(w, errInvalidZipcode, http.StatusBadRequest)
+		http.Error(w, errInvalidZipcode, http.StatusUnprocessableEntity)
 		return
 	}
 
 	if len(zipcodeRequest.Zipcode) != 8 {
-		http.Error(w, errInvalidZipcode, http.StatusBadRequest)
+		http.Error(w, errInvalidZipcode, http.StatusUnprocessableEntity)
 		return
 	}
 }
 
 func main() {
-	http.HandleFunc("/", handleAddressRequest)
-	err := http.ListenAndServe(":8080", nil)
-	if err != nil {
-		log.Fatal(err)
-	}
+	http.HandleFunc("/", handleZipcodeRequest)
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
