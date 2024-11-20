@@ -1,33 +1,26 @@
 services:
 
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    restart: always
+    ports:
+      - "16686:16686"
+      - "14268"
+      - "14250"
+
   zipkin:
     image: openzipkin/zipkin:latest
     restart: always
     ports:
       - "9411:9411"
-    depends_on:
-      - otel-collector
 
   prometheus:
-    container_name: prometheus
     image: prom/prometheus:latest
     restart: always
     volumes:
       - ./.docker/prometheus.yaml:/etc/prometheus/prometheus.yml
     ports:
       - "9090:9090"
-    depends_on:
-      - otel-collector
-
-  grafana:
-    container_name: grafana
-    image: grafana/grafana:latest
-    restart: always
-    ports:
-      - "3000:3000"
-    depends_on:
-      - prometheus
-      - otel-collector
 
   otel-collector:
     image: otel/opentelemetry-collector:latest
@@ -36,9 +29,15 @@ services:
     volumes:
       - ./.docker/otel-collector-config.yaml:/etc/otel-collector-config.yaml
     ports:
+      - "1888:1888"   # pprof extension
       - "8888:8888"   # Prometheus metrics exposed by the collector
       - "8889:8889"   # Prometheus exporter metrics
+      - "13133:13133" # health_check extension
       - "4317:4317"   # OTLP gRPC receiver
+      - "55679:55679" # zpages extension
+    depends_on:
+      - jaeger
+      - zipkin
 
   app1:
     container_name: app1
@@ -47,14 +46,13 @@ services:
       dockerfile: Dockerfile
       args:
         APP: app1
+    restart: always
     environment:
-      -
+      - OTEL_EXPORTER_OTLP_ENDPOINT=otel-collector:4317
     ports:
       - "8080:8080"
     depends_on:
-      - zipkin
-      - prometheus
-      - otel-collector
+      - app2
 
   app2:
     container_name: app2
@@ -63,11 +61,10 @@ services:
       dockerfile: Dockerfile
       args:
         APP: app2
+    restart: always
     environment:
-      -
+      - OTEL_EXPORTER_OTLP_ENDPOINT=otel-collector:4317
     ports:
       - "8181:8181"
     depends_on:
-      - zipkin
-      - prometheus
       - otel-collector

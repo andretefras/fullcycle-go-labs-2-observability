@@ -1,13 +1,20 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 var (
@@ -37,65 +44,102 @@ type WeatherResponse struct {
 	Kelvin     float64 `json:"temp_k"`
 }
 
-func handleZipcodeRequest(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" {
-		http.Error(w, errValidatingRequestMethod, http.StatusMethodNotAllowed)
-		return
-	}
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		fmt.Printf("%s\n", string(body))
-		http.Error(w, errReadingRequestBody, http.StatusInternalServerError)
-		return
-	}
-	defer r.Body.Close()
-
-	var zipcodeRequest ZipcodeRequest
-	err = json.Unmarshal(body, &zipcodeRequest)
-	if err != nil {
-		http.Error(w, errValidatingRequestZipcode, http.StatusUnprocessableEntity)
-		return
-	}
-
-	if len(zipcodeRequest.Zipcode) != 8 {
-		http.Error(w, errValidatingRequestZipcode, http.StatusUnprocessableEntity)
-		return
-	}
-
-	zipcodeResponse, err := fetchZipcode(w, zipcodeRequest)
-	if err != nil {
-		return
-	}
-
-	weatherResponse, err := fetchWeatherApi(w, zipcodeResponse)
-	if err != nil {
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	err = json.NewEncoder(w).Encode(weatherResponse)
-	if err != nil {
-		http.Error(w, errRequestingWeather, http.StatusInternalServerError)
-		return
-	}
-}
-
 func main() {
-	http.HandleFunc("/", handleZipcodeRequest)
-	log.Fatal(http.ListenAndServe(":8181", nil))
+	shutdown := initProvider()
+	defer shutdown()
+
+	meter := otel.Meter("app2-meter")
+	serverAttribute := attribute.String("server-attribute", "foo")
+	commonLabels := []attribute.KeyValue{serverAttribute}
+	requestCount, _ := meter.Int64Counter(
+		"app2/request_counts",
+		metric.WithDescription("The number of requests received"),
+	)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		requestCount.Add(ctx, 1, metric.WithAttributes(commonLabels...))
+		span := trace.SpanFromContext(ctx)
+		bag := baggage.FromContext(ctx)
+
+		var baggageAttributes []attribute.KeyValue
+		baggageAttributes = append(baggageAttributes, serverAttribute)
+		for _, member := range bag.Members() {
+			baggageAttributes = append(baggageAttributes, attribute.String("baggage key:"+member.Key(), member.Value()))
+		}
+		span.SetAttributes(baggageAttributes...)
+
+		span.AddEvent("Validating request")
+
+		if r.Method != "GET" {
+			http.Error(w, errValidatingRequestMethod, http.StatusMethodNotAllowed)
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			fmt.Printf("%s\n", string(body))
+			http.Error(w, errReadingRequestBody, http.StatusInternalServerError)
+			return
+		}
+		defer r.Body.Close()
+
+		span.AddEvent("Validating zipcode")
+		var zipcodeRequest ZipcodeRequest
+		err = json.Unmarshal(body, &zipcodeRequest)
+		if err != nil {
+			http.Error(w, errValidatingRequestZipcode, http.StatusUnprocessableEntity)
+			return
+		}
+
+		if len(zipcodeRequest.Zipcode) != 8 {
+			http.Error(w, errValidatingRequestZipcode, http.StatusUnprocessableEntity)
+			return
+		}
+
+		span.AddEvent("Getting zipcode data")
+		zipcodeResponse, err := fetchZipcodeApi(ctx, w, zipcodeRequest)
+		if err != nil {
+			return
+		}
+
+		span.AddEvent("Getting weather data")
+		weatherResponse, err := fetchWeatherApi(ctx, w, zipcodeResponse)
+		if err != nil {
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		err = json.NewEncoder(w).Encode(weatherResponse)
+		if err != nil {
+			http.Error(w, errRequestingWeather, http.StatusInternalServerError)
+			return
+		}
+	})
+
+	mux := http.NewServeMux()
+	mux.Handle("/", otelhttp.NewHandler(handler, "Receive request"))
+	server := &http.Server{
+		Addr:        ":8181",
+		Handler:     mux,
+		ReadTimeout: 20 * time.Second,
+	}
+	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		handleErr(err, "server failed to serve")
+	}
 }
 
-func fetchZipcode(w http.ResponseWriter, zipcodeRequest ZipcodeRequest) (ZipcodeResponse, error) {
-	fmt.Printf("%s\n", zipcodeRequest)
-	req, err := http.NewRequest("GET", "https://viacep.com.br/ws/"+zipcodeRequest.Zipcode+"/json/", nil)
+func fetchZipcodeApi(ctx context.Context, w http.ResponseWriter, zipcodeRequest ZipcodeRequest) (ZipcodeResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://viacep.com.br/ws/"+zipcodeRequest.Zipcode+"/json/", nil)
 	if err != nil {
 		http.Error(w, errRequestingZipcode, http.StatusUnprocessableEntity)
 		return ZipcodeResponse{}, errors.New(errRequestingZipcode)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := http.Client{}
+	client := http.Client{
+		Transport: otelhttp.NewTransport(http.DefaultTransport),
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		http.Error(w, errRequestingZipcode, http.StatusNotFound)
@@ -130,12 +174,11 @@ func fetchZipcode(w http.ResponseWriter, zipcodeRequest ZipcodeRequest) (Zipcode
 	return zipcodeResponse, nil
 }
 
-func fetchWeatherApi(w http.ResponseWriter, zipcodeResponse ZipcodeResponse) (WeatherResponse, error) {
-	fmt.Printf("%s\n", zipcodeResponse)
+func fetchWeatherApi(ctx context.Context, w http.ResponseWriter, zipcodeResponse ZipcodeResponse) (WeatherResponse, error) {
 	params := url.Values{}
 	params.Add("q", zipcodeResponse.Localidade)
 	fullUrl := fmt.Sprintf("%s?%s", "https://api.weatherapi.com/v1/current.json", params.Encode())
-	req, err := http.NewRequest("GET", fullUrl, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", fullUrl, nil)
 	if err != nil {
 		http.Error(w, errRequestingWeather, http.StatusUnprocessableEntity)
 		return WeatherResponse{}, errors.New(errRequestingWeather)
@@ -143,7 +186,9 @@ func fetchWeatherApi(w http.ResponseWriter, zipcodeResponse ZipcodeResponse) (We
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("key", "b88fdf1171c0464d908220432241511")
-	client := http.Client{}
+	client := http.Client{
+		Transport: otelhttp.NewTransport(http.DefaultTransport),
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		http.Error(w, errRequestingWeather, http.StatusInternalServerError)
