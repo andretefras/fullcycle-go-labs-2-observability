@@ -49,6 +49,7 @@ services:
     restart: always
     environment:
       - OTEL_EXPORTER_OTLP_ENDPOINT=otel-collector:4317
+      - WEATHER_SERVICE_ENDPOINT=http://app2:8181
     ports:
       - "8080:8080"
     depends_on:
@@ -64,6 +65,7 @@ services:
     restart: always
     environment:
       - OTEL_EXPORTER_OTLP_ENDPOINT=otel-collector:4317
+      - WEATHER_API_KEY=${WEATHER_API_KEY}
     ports:
       - "8181:8181"
     depends_on:

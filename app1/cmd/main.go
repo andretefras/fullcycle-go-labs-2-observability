@@ -5,14 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"io"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -24,25 +25,6 @@ var (
 	errParsingWeatherResponse   = "Error parsing weather response"
 	errReturningWeatherResponse = "Error returning weather response"
 )
-
-const name = "go.opentelemetry.io/otel/example/dice"
-
-var (
-	tracer     = otel.Tracer(name)
-	meter      = otel.Meter(name)
-	logger     = otelslog.NewLogger(name)
-	requestCnt metric.Int64Counter
-)
-
-func init() {
-	var err error
-	requestCnt, err = meter.Int64Counter("cep.requests",
-		metric.WithDescription("The number of cep requests"),
-		metric.WithUnit("{request}"))
-	if err != nil {
-		panic(err)
-	}
-}
 
 type ZipcodeRequest struct {
 	Zipcode string `json:"zipcode"`
@@ -56,7 +38,6 @@ type WeatherResponse struct {
 }
 
 func main() {
-
 	shutdown := initProvider()
 	defer shutdown()
 
@@ -98,6 +79,8 @@ func main() {
 
 		span.AddEvent("Validating request")
 
+		defer endSpan(ctx, span, startTime, requestLatency, commonLabels)
+
 		if r.Method != "POST" {
 			http.Error(w, errValidatingZipcodeRequest, http.StatusMethodNotAllowed)
 			return
@@ -123,7 +106,11 @@ func main() {
 		}
 
 		span.AddEvent("Making request")
-		req, err := http.NewRequestWithContext(ctx, "GET", "http://app2:8181?zipcode="+zipcodeRequest.Zipcode, bytes.NewBuffer(body))
+		weatherServiceEndpoint, ok := os.LookupEnv("WEATHER_SERVICE_URL")
+		if !ok {
+			weatherServiceEndpoint = "http://app2:8181"
+		}
+		req, err := http.NewRequestWithContext(ctx, "GET", weatherServiceEndpoint+"?zipcode="+zipcodeRequest.Zipcode, bytes.NewBuffer(body))
 		if err != nil {
 			http.Error(w, errFetchingWeatherRequest, http.StatusInternalServerError)
 			return
@@ -160,17 +147,19 @@ func main() {
 			http.Error(w, errReturningWeatherResponse, http.StatusInternalServerError)
 			return
 		}
-
-		span.End()
-		latencyMs := float64(time.Since(startTime)) / 1e6
-
-		requestLatency.Record(ctx, latencyMs, metric.WithAttributes(commonLabels...))
-
-		fmt.Printf("Latency: %.3fms\n", latencyMs)
 	})
 
 	err := http.ListenAndServe(":8080", handler)
 	if err != nil {
 		handleErr(err, "server failed to serve")
 	}
+}
+
+func endSpan(ctx context.Context, span trace.Span, startTime time.Time, requestLatency metric.Float64Histogram, commonLabels []attribute.KeyValue) {
+	span.End()
+	latencyMs := float64(time.Since(startTime)) / 1e6
+
+	requestLatency.Record(ctx, latencyMs, metric.WithAttributes(commonLabels...))
+
+	fmt.Printf("Latency: %.3fms\n", latencyMs)
 }

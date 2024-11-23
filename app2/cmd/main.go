@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 )
 
@@ -25,6 +26,7 @@ var (
 	errFindingZipcode           = "Can not find zipcode"
 	errParsingZipcode           = "Error parsing zipcode"
 	errRequestingWeather        = "Error requesting weather"
+	errMissingApiKey            = "Error finding weather api key"
 	errParsingWeather           = "Error parsing weather"
 )
 
@@ -184,8 +186,14 @@ func fetchWeatherApi(ctx context.Context, w http.ResponseWriter, zipcodeResponse
 		return WeatherResponse{}, errors.New(errRequestingWeather)
 	}
 
+	weatherApiKey, ok := os.LookupEnv("WEATHER_API_KEY")
+	if !ok {
+		http.Error(w, errMissingApiKey, http.StatusUnprocessableEntity)
+		return WeatherResponse{}, errors.New(errMissingApiKey)
+	}
+
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("key", "b88fdf1171c0464d908220432241511")
+	req.Header.Set("key", weatherApiKey)
 	client := http.Client{
 		Transport: otelhttp.NewTransport(http.DefaultTransport),
 	}
