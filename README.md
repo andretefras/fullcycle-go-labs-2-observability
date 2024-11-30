@@ -15,6 +15,7 @@ chave de acesso da API:
 ```shell
 cp .env.example .env
 ```
+**Se a variável de ambiente WEATHER_API_KEY não for defnida, não será possível consultar a api**
 
 O ambiente de desenvolvimento pode ser configurado com o comando abaixo:
 
