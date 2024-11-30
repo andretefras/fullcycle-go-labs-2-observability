@@ -128,11 +128,22 @@ func main() {
 
 		span.AddEvent("Reading response")
 
+		if http.StatusOK != resp.StatusCode {
+			body, err = io.ReadAll(resp.Body)
+			if err != nil {
+				http.Error(w, errParsingWeatherResponse, http.StatusInternalServerError)
+				return
+			}
+			http.Error(w, string(body), http.StatusBadRequest)
+			return
+		}
+
 		body, err = io.ReadAll(resp.Body)
 		if err != nil {
 			http.Error(w, errParsingWeatherResponse, http.StatusInternalServerError)
 			return
 		}
+		fmt.Println(body)
 
 		var weatherResponse WeatherResponse
 		err = json.Unmarshal(body, &weatherResponse)

@@ -26,7 +26,7 @@ var (
 	errFindingZipcode           = "Can not find zipcode"
 	errParsingZipcode           = "Error parsing zipcode"
 	errRequestingWeather        = "Error requesting weather"
-	errMissingApiKey            = "Error finding weather api key"
+	errMissingApiKey            = "Error finding WEATHER_API_KEY. Please check your environment variables and README.md"
 	errParsingWeather           = "Error parsing weather"
 )
 
@@ -188,6 +188,11 @@ func fetchWeatherApi(ctx context.Context, w http.ResponseWriter, zipcodeResponse
 
 	weatherApiKey, ok := os.LookupEnv("WEATHER_API_KEY")
 	if !ok {
+		http.Error(w, errMissingApiKey, http.StatusUnprocessableEntity)
+		return WeatherResponse{}, errors.New(errMissingApiKey)
+	}
+
+	if weatherApiKey == "" {
 		http.Error(w, errMissingApiKey, http.StatusUnprocessableEntity)
 		return WeatherResponse{}, errors.New(errMissingApiKey)
 	}
